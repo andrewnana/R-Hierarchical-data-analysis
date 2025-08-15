@@ -1,0 +1,259 @@
+---
+title: 'Comparative Analysis of Statistical Methods for Hierarchical Data in Neuroscience Research: A Case Study'
+author: "Andre Nana"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+    theme: lumen
+    number_sections: true
+  md_document:
+    preserve_yaml: false
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+clean: false
+always_allow_html: true
+---
+
+## Introduction and rationale
+
+Correctness of statistical methods and analysis is the cornerstone for scientific reliability of research outputs. However, research has shown that the correct statistical technique is not always utilized, especially with complex data such as hierarchical and longitudinal data where observations are correlated. Indeed, the correlated nature of the observations violates one of the key assumptions for linear models which is independence of observations. Examples are found in neurosciences - among other fields, where experiments conducted in mice may yield information that may have a between-subject variability (between mice) and within-subject variability (within each mouse). Using data from Moen et al. (Moen et al., 2016), we attempt to explore different methods of analysis of the same data for comparative purposes. The study design is as follows: each mouse is assigned to one of these 3 groups of treatment - fatty acid treatment, a vehicle, or no treatment. Subsequently, each mouse will receive both a pten ten knockdown treatment and a control treatment. The outcome of interest is the soma size of mice neurons, which is anticipated to be affected by both the initial treatment regimen and the presence or absence of pten knockdown.
+
+Variables of interest:
+-   Soma size (somasize) = outcome of interest
+-   Pten knockdown status (pten) = factor of 0 or 1 indicating control or Pten shRNA, respectively
+-   Treatment regimen (fattyacid) = factor of 0, 1, or 2 indicating no treatment, vehicle control, or fatty acid treatment, respectively
+-   Mouse identity for each neuron (mouseid) 
+-   Mean soma size (meanss) 
+-   Proportion of cells with Pten knockdown per mouse (prop)
+-   Number of neuron measurements per mouse (numobs)
+
+## Data setup and manipulation
+
+```{r setup, message=FALSE, warning=FALSE}
+# environment parameters
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=80),tidy=TRUE, echo = TRUE, message = FALSE)
+
+# loading packages
+library(tidyverse)
+library(table1)
+library(nlme)
+library(lme4)
+library(geepack) 
+library(broom)
+library(gt)
+
+mouse <- read.csv("PtenAnalysisData.csv") 
+```
+
+## Boxplot of soma size per mouse
+
+```{r, message=FALSE, echo=FALSE}
+ggplot(mouse, aes(x = factor(mouseid), y = somasize, fill = factor(pten))) +
+  geom_boxplot(outlier.shape = NA, varwidth = TRUE) + 
+  geom_jitter(width = 0.25, alpha = 0.4, aes(color = factor(pten))) + 
+  labs(
+    title = "Box plot of soma size per mouse and by PTEN status",
+    x = "Mouse ID", 
+    y = "Soma size", 
+    fill = "PTEN",
+    color = "PTEN",
+    caption = "Jittered data represent individual neurons"
+  ) +
+  theme_classic(base_size = 12) 
+
+
+ggplot(mouse, aes(x = factor(mouseid), y = somasize, fill = factor(pten))) +
+  geom_boxplot(outlier.shape = NA, varwidth = TRUE) + 
+  geom_jitter(width = 0.25, alpha = 0.4, aes(color = factor(pten))) + 
+  theme_classic(base_size = 12) +
+  facet_wrap(~fa, ncol=3, nrow=1) +
+  labs(
+    title = "Box plot of soma size per treatment and by PTEN status",
+    x = "Mouse ID", 
+    y = "Soma size", 
+    fill = "PTEN",
+    color = "PTEN",
+    caption = "Jittered data represent individual neurons"
+  ) 
+  
+
+```
+
+From these boxplots, we observe a great variability in neurons soma size with respect to both mice and pten knockdown or not
+
+## Intraclass correlation coefficient
+
+```{r}
+fit0 <- lme(somasize ~ 1,
+            random = ~ 1|mouseid,
+            data = mouse)
+ICClme <- function(fit0){
+  cors <- as.numeric(VarCorr(fit0))
+  cors[1]/(cors[1] + cors[2])
+}
+
+ICClme(fit0)
+```
+
+The intraclass correlation coefficient (ICC) for neuron soma size was estimated to be 0.173, indicating that 17.3% of the total variability in soma size is attributable to differences between mice, while the remaining 82.7% is explained by within-mouse variability, including neuron-specific differences and residual error.
+
+## Models formulae
+
+### Mouse-level weighted regression
+
+$$
+\overline{somasize_{i}} = \beta_0 + \beta_1{\overline{Pten_{i}}} + \overline{\epsilon_{i}} 
+$$
+
+Assumptions:
+
+$$
+\text{Independence of observations} \\
+$$
+
+$$
+\overline{\epsilon_{i}} \overset{\text{iid}}{\sim} N(0,\sigma_\epsilon^2)
+$$
+
+Here, the independence of observations is violated because as we have seen in the boxplot, soma size depends on both pten status within individual mice, and treatment regiment between mice
+
+### Marginal model
+
+$$
+somasize_{ij} = \beta_0 + \beta_1{\overline{Pten_{ij}}} + \beta_2{Pten_{ij}} + \epsilon_{ij} 
+$$
+
+Assumptions: no correlation between measurements within group (independence), all pairwise correlations are the same (in large-N limit) (Exchangeable),observations taken more closely in time are more highly correlated (auto-regressive)
+
+### Mixed effect model
+
+$$
+somasize_{ij} = \beta_0 + + \beta_1{\overline{Pten_{i}}} + \theta_{i} + \epsilon_{ij}
+$$
+Assumptions: 
+
+$$
+\epsilon_{ij} \overset{\text{iid}}{\sim} N(0, \sigma_\epsilon^2) \quad \\
+$$
+
+$$
+\theta_{i} \overset{\text{iid}}{\sim} N(0, \tau_{00}^2) \quad 
+$$
+
+### Mixed effect model with pten adjustment
+
+
+$$
+somasize_{ij} = \beta_0 + \beta_1{\overline{Pten_{i}}} + \beta_2{Pten_{ij}} + \theta_{i} + \epsilon_{ij}
+$$
+
+ Assumptions are the same as the unadjusted model: 
+$$
+\epsilon_{ij} \overset{\text{iid}}{\sim} N(0, \sigma_\epsilon^2) \quad \\
+$$
+
+$$
+\theta_{i} \overset{\text{iid}}{\sim} N(0, \tau_{00}^2) \quad 
+$$
+
+## Analysis
+
+```{r}
+# a. Weighted regression 
+mouse1 <- mouse %>% filter(fa == 0)
+
+mouser <-  mouse1 %>% group_by(mouseid) %>%
+                     summarize(meansoma = mean(meanss_all),
+                             meanprop = mean(prop),
+                             numobs = n()) 
+model_weighted <- lm(meansoma ~ meanprop, data = mouser, weights = numobs)
+
+# b. Marginal model 
+model_marginal <- geeglm(somasize ~ prop + pten, 
+                         id = mouseid, 
+                         data = mouse1, 
+                         corstr = "exchangeable")
+
+# c. Mixed-effects model
+
+model_mixed <- nlme::lme(somasize ~ prop, 
+                         data = mouse1, 
+                         random = ~1 | mouseid)
+
+# d. Mixed-effects model, adjusted for pten
+
+model_mixed_adj <- nlme::lme(somasize ~ prop + pten, 
+                         data = mouse1,  
+                         random = ~1 | mouseid)
+
+# Combined output and table
+## constructing a function to aggregate estimates from different models
+estimate_agg <- function(model, term_filter, model_name, is_mixed = FALSE) {
+  tidy_function <- if (is_mixed) broom.mixed::tidy else tidy
+  tidy_function(model, conf.int = TRUE) |>
+    filter(term == term_filter) %>%
+    mutate(
+      Coefficient = round(estimate, 3),
+      `Std Err` = round(std.error, 3),
+      `p-value` = round(p.value, 3),
+      `Lower 95% CI` = round(conf.low, 3),
+      `Upper 95% CI` = round(conf.high, 3),
+      Model = model_name
+    ) %>%
+    select(Model, Coefficient, `Std Err`, `p-value`, `Lower 95% CI`, `Upper 95% CI`)
+}
+
+## Applying the function to each model
+mod1 <- estimate_agg(model_weighted, "meanprop", "Mouse-level weighted regression")
+mod2 <- estimate_agg(model_marginal, "prop", "Marginal regression")
+mod3 <- estimate_agg(model_mixed, "prop", "Mixed-effect regression", is_mixed = TRUE)
+mod4 <- estimate_agg(model_mixed_adj, "prop", "Mixed-effect regression with Pten as an additional predictor", is_mixed = TRUE)
+
+## Combining all outputs in a single table with gt()
+cmodels <- bind_rows(mod1, mod2, mod3, mod4) %>%
+  mutate(`95% CI` = paste0("(", `Lower 95% CI`, ", ", `Upper 95% CI`, ")")) %>%
+  select(-`Lower 95% CI`, -`Upper 95% CI`) |>
+  gt() |>
+       tab_header(title = md("**Models Summary**")) %>%
+       fmt_markdown(columns = `95% CI`) %>%
+       cols_align(align = "center") %>%
+       tab_options(table.font.size = "small")
+
+cmodels
+```
+
+## Interpretion of results
+
+| Model | Original  Paper     |   | Our  Analysis                               |
+|---------------|---------------|---------------|---------------|---------------|
+|  | *Coefficient* | *95% CI* | *Coefficient* | *95% CI* |
+| Mouse-level regression (̅Pten); weighting | -0.24 | (-2.36, 1.88) | -0.239 | (-2.359, 1.881) |
+| Marginal regression | -0.11 | (-0.50, 0.28) | -0.109 | (-0.457, 0.238) |
+| Mixed-effect regression | -0.004 | (-0.37, 0.37) | 0.011 | (-1.2, 1.222) |
+| Mixed-effect regression with Pten as an additional predictor | -0.11 | (-0.51, 0.28) | -0.102 | (-1.305, 1.101) |
+
+: *Results from the original paper versus results from our analysis*
+
+**Interpretation**
+
+-   Mouse-level regression (Pten); weighting: On average, pten knockdown was not associated with the mean soma size, with an estimate of -0.24 (-2.359, 1.881)
+
+-   The estimate of the marginal regression using a generalized estimating equation (GEE) approach to assess the association between proportion of pten knockdown and soma size among mice the control group, while adjusting for pten status was -0.109 (-0.457, 0.238), indicating a non-significant negative association.
+
+-   The fixed effect estimate of the linear mixed-effects analysis to examine the association between proportion of pten knockdown and soma size among mice the control group was 0.011 (95% CI: - 1.2, 1.222), indicating no significant association with pten knockdown and soma size.
+
+-   The fixed effect estimate of the linear mixed-effects analysis to examine the association between proportion of pten knockdown and soma size among mice the control group , while adjusting for pten status was -0.11 (95% CI: -1.305, 1.101), indicating no significant association with soma size.
+
+## Remarks and conclusion
+
+In this study, we utilized different approaches to assess the impact of pten knockdown on soma size in mice. We saw that the regression of mean soma size over the mean proportion of pten knockdown yields a vastly different result compared to other models. Indeed, this naive model did not consider the neuron-level variability. However, the Marginal regression and the adjusted mixed-effect model yield comparable results with -0.109 (-0.457, 0.238) and -0.102 (-1.305, 1.101), respectively, with the marginal model providing a narrower confidence interval. 
+These two models provide the correct estimates,  as they consider both the between-subject and within-subject variability.
+The difference in estimates between our analysis and the original paper may probably be due to differences in the underlying computation methods between R and STATA. In conclusion, this exercise illustrates the need to identify the correct statistical method based on a good understanding of the data structure and the assumptions of the statistical techniques.
+
+
+## References
+
+Moen EL, Fricano-Kugler CJ, Luikart BW, O'Malley AJ. Analyzing Clustered Data: Why and How to Account for Multiple Observations Nested within a Study Participant? PLoS One. 2016 Jan 14;11(1):e0146721. doi: 10.1371/journal.pone.0146721. PMID: 26766425; PMCID: PMC4713068.
